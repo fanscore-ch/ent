@@ -542,6 +542,45 @@ func TestBuilder(t *testing.T) {
 		{
 			input: Dialect(dialect.Postgres).
 				Delete("users").
+				Where(EQ("status", "inactive")).
+				Returning("id", "name"),
+			wantQuery: `DELETE FROM "users" WHERE "status" = $1 RETURNING "id", "name"`,
+			wantArgs:  []any{"inactive"},
+		},
+		{
+			input: Dialect(dialect.SQLite).
+				Delete("users").
+				Where(EQ("status", "inactive")).
+				Returning("id"),
+			wantQuery: "DELETE FROM `users` WHERE `status` = ? RETURNING `id`",
+			wantArgs:  []any{"inactive"},
+		},
+		{
+			input: Dialect(dialect.MySQL).
+				Delete("users").
+				Where(EQ("status", "inactive")).
+				Returning("id"),
+			wantQuery: "DELETE FROM `users` WHERE `status` = ?",
+			wantArgs:  []any{"inactive"},
+		},
+		{
+			input: func() Querier {
+				d := Dialect(dialect.Postgres)
+				selectedUsers := d.Select("id").From(d.Table("users")).
+					Where(EQ("status", "inactive"))
+				deleted := d.Delete("posts").
+					Where(In("author_id", d.Select("id").From(d.Table("selected_users")))).
+					Returning("id")
+				with := d.With("selected_users").As(selectedUsers).
+					With("deleted_posts").As(deleted)
+				return d.Select("id").From(d.Table("deleted_posts")).Prefix(with)
+			}(),
+			wantQuery: `WITH "selected_users" AS (SELECT "id" FROM "users" WHERE "status" = $1), "deleted_posts" AS (DELETE FROM "posts" WHERE "author_id" IN (SELECT "id" FROM "selected_users") RETURNING "id") SELECT "id" FROM "deleted_posts"`,
+			wantArgs:  []any{"inactive"},
+		},
+		{
+			input: Dialect(dialect.Postgres).
+				Delete("users").
 				Where(IsNull("parent_id")).
 				Schema("mydb"),
 			wantQuery: `DELETE FROM "mydb"."users" WHERE "parent_id" IS NULL`,
@@ -2022,6 +2061,17 @@ func TestInsert_OnConflict(t *testing.T) {
 		require.Equal(t, "INSERT INTO `users` (`name`, `rank`) VALUES (?, ?), (?, NULL) ON DUPLICATE KEY UPDATE `name` = VALUES(`name`), `rank` = VALUES(`rank`), `id` = LAST_INSERT_ID(`id`)", query)
 		require.Equal(t, []any{"Ariel", 10, "Mashraki"}, args)
 	})
+}
+
+func TestDeleteBuilderQueryRepeated(t *testing.T) {
+	deleteQuery := Dialect(dialect.Postgres).Delete("users").
+		Where(EQ("status", "inactive")).
+		Returning("id")
+	for range 2 {
+		query, args := deleteQuery.Query()
+		require.Equal(t, `DELETE FROM "users" WHERE "status" = $1 RETURNING "id"`, query)
+		require.Equal(t, []any{"inactive"}, args)
+	}
 }
 
 func TestEscapePatterns(t *testing.T) {
